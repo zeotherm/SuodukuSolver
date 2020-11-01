@@ -1,3 +1,6 @@
+from itertools import chain
+import copy
+
 class cell:
     def __init__(self, row, col, answer=0):
         if answer==0:
@@ -20,6 +23,7 @@ class cell:
         self.answer = n
         self.solved = True
         self.possible = set()
+
 
 class row_slice:
     def __init__(self, vals):
@@ -127,15 +131,6 @@ class set_chunk:
     def __init__(self, vals):
         self.idx = 0
         self.chunk = vals
-    def __iter__(self):
-        return self
-    def __next__(self):
-        self.idx += 1
-        try:
-            return self.chunk[(self.idx-1)//3][(self.idx-1)%3]
-        except IndexError:
-            self.idx = 0
-            raise StopIteration
     def __repr__(self):
         resp = ""
         for i in range(3):
@@ -152,46 +147,37 @@ class set_chunk:
         return resp
 
     def process_knowns(self):
-        knowns = set([])
-        for j in range(3):
-            knowns |= {i.answer for i in self.chunk[j] if i.solved}
-        for chunk_row in self.chunk:
-            for c in chunk_row:
-                if not c.answer:
-                    c.possible -= knowns
+        block = chain.from_iterable(self.chunk)
+        knowns = {b.answer for b in block if b.solved}
+        for i in chain.from_iterable(self.chunk):
+            if not i.answer:
+                i.possible -= knowns
         return
+
     def solve_knowns(self):
         num_solved = 0
-        for r in range(3):
-            for c in range(3):
-                if len(self.chunk[r][c].possible) == 1:
-                    self.chunk[r][c].solve(self.chunk[r][c].possible.pop())
-                    num_solved += 1
-        poss_sets = []
-        for r in range(3):
-            for c in range(3):
-                poss_sets.append(self.chunk[r][c].possible)
-        uniques = unique_element(*poss_sets)
+        block = chain.from_iterable(self.chunk)        
+        for b in block:
+            if len(b.possible) == 1:
+                b.solve(b.possible.pop())
+                self.process_knowns()
+                num_solved += 1
+
+        uniques = unique_element(*[i.possible for i in chain.from_iterable(self.chunk)])
         while uniques:
             for u in uniques:
-                for r in range(3):
-                    for c in range(3):
-                        if u in self.chunk[r][c].possible:
-                            self.chunk[r][c].solve(u)
-                            self.process_knowns()
-                            num_solved += 1
-                            break
-            poss_sets = []
-            for r in range(3):
-                for c in range(3):
-                    poss_sets.append(self.chunk[r][c].possible)
-            uniques = unique_element(*poss_sets)             
+                for b in chain.from_iterable(self.chunk):
+                    if u in b.possible:
+                        b.solve(u)
+                        self.process_knowns()
+                        num_solved += 1
+                        break
+            uniques = unique_element(*[i.possible for i in chain.from_iterable(self.chunk)])             
                    
         return num_solved
 
 
-class board:
-    
+class board:    
     def __init__(self, inp = ""):
         self.b = [[cell(i,j) for i in range(9)] for j in range(9)]
         if( inp != ""):
@@ -255,10 +241,7 @@ class board:
                     [3, 3, 3, 6, 6, 6, 9, 9, 9],
                     [3, 3, 3, 6, 6, 6, 9, 9, 9]]
         return b_groups[r][c]
-    def known(self, r, c):
-        #return everything known in the row r
-        s = set([cell.answer for cells in self.row(r) if cells.solved])
-        return s
+
     def process(self):
         for g in range(9):
             gs = self.group_idx(g)
@@ -271,28 +254,75 @@ class board:
             cs.process_knowns()
         return
 
-    def sanity_check(self):
-        for r in range(9):
-            for c in range(9):
-                if not self.b[r][c].possible and not self.b[r][c].solved:
-                    raise RuntimeError('r: ' + str(r) + ', c: ' + str(c))
+    def sanity_check(self, t, count):
+        state = chain.from_iterable(self.b)
+        for c in state:
+            if not c.possible and not c.solved:
+                raise RuntimeError('called from ' + t + ', count: ' + str(count) + ' r: ' + str(c.row) + ', c: ' + str(c.col))
 
     def solve_knowns(self):
         num_solved = 0
         for g in range(9):
             num_solved += self.group_idx(g).solve_knowns()
             self.process()
-            self.sanity_check()
+            self.sanity_check('groups', g)
         for r in range(9):
             num_solved += self.row(r).solve_knowns()
             self.process()
-            self.sanity_check()
+            self.sanity_check('rows', r)
         for c in range(9):
             num_solved += self.col(c).solve_knowns()
             self.process()
-            self.sanity_check()
-        self.sanity_check()
+            self.sanity_check('cols', c)
+        self.sanity_check('overall', 0)
         return num_solved
+
+    def solved(self):
+        return all([i.solved for i in chain.from_iterable(self.b)])
+
+    def try_guessing(self):
+        # pick one of the smallest unknown set
+        open_poss = [i for i in chain.from_iterable(self.b) if not i.solved]
+        #take 1st unsolved
+        test_b = copy.deepcopy(self.b)
+        for unsolved in open_poss:
+            r = unsolved.row
+            c = unsolved.col
+            poss_list = list(unsolved.possible)
+            for i in range(len(poss_list)):
+                v = poss_list[len(poss_list)-1-i]
+                self.solve_space(c, r, v)
+                while not self.solved():
+                    try:
+                        self.process()
+                        ns = self.solve_knowns()
+                        print("Solved", ns, "cells with this guess")
+                    except RuntimeError as e:
+                        print("BAD SOLUTION")
+                        print(e)
+                        self.b = copy.deepcopy(test_b)
+                        break
+                if self.solved(): 
+                    return
+                else:
+                    continue
+        return
+
+    def solve(self):
+        ns = 1
+        while ns > 0:
+            b.process()
+            ns = b.solve_knowns()
+            print("Filled in", ns, "new entries in this pass", sep=' ')
+            #print(b)
+            if ns == 0:
+                print("Is solved?", b.solved())
+                if not b.solved():
+                    # need to do some trial/error
+                    print("Unable to solve through logical deduction, employing guess")
+                    b.try_guessing()
+        return
+
 
 def unique_element(*sets):
     def occurs_in(x, *ss):
@@ -339,21 +369,38 @@ if __name__ == "__main__":
 295 4  8 
 4   7 6  """
 
-    v = unique_element(set([1,2,3]), set([2, 3]), set([3, 4]))
+    hb3 = """  5  49  
+   97 85 
+4  8     
+ 43    7 
+9   1   2
+ 1    36 
+     2  5
+ 24 61   
+  97  6  """
 
-    b = board(hb2)
+    hb4 = """8  4  5
+9  8   21
+ 6 5 18  
+ 2      5
+   9 4   
+3      6 
+  71 9 8 
+54   2  7
+  9  6  2"""
+    eb1 = """ 86 2   9
+   9 4 3 
+4   8    
+      91 
+94     26
+ 58      
+    5   4
+ 2 1 7   
+8   4 76 """
+
+    b = board(hb4)
     print(b)
-    ns = 1
-    while ns > 0:
-        b.process()
-        ns = b.solve_knowns()
-        print("Filled in", ns, "new entries in this pass", sep=' ')
-        print(b)
-        if ns == 0:
-            b.process()
-            b.solve_knowns()
-            x = 1
-
+    b.solve()
     print("SOLVED!!!!")
     print(b)
     
